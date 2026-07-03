@@ -1,0 +1,24 @@
+{
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "compilerOptions": {
+    "deleteOutDir": true,
+    "webpack": false,
+    "tsConfigPath": "tsconfig.json",
+    "assets": [
+      {
+        "include": "**/*.yaml",
+        "outDir": "dist"
+      },
+      {
+        "include": "**/*.yml",
+        "outDir": "dist"
+      },
+      {
+        "include": "providers/skills/definitions/**/*.md",
+        "outDir": "dist"
+      }
+    ],
+    "watchAssets": true
+  }
+}

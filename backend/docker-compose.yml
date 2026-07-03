@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: chatbi-postgres
+    environment:
+      POSTGRES_USER: ${DATABASE_USER:-chatbi_user}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-chatbi_password}
+      POSTGRES_DB: ${DATABASE_NAME:-chatbi_db}
+    ports:
+      - "${DATABASE_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-chatbi_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - chatbi-network
+  redis:
+    image: redis:7-alpine
+    container_name: chatbi-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - chatbi-network
+
+  # 可选：Qdrant 向量库（用于 W3+）
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: chatbi-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrantdata:/qdrant/storage
+    environment:
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+    networks:
+      - chatbi-network
+    profiles:
+      - optional
+
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local
+  qdrantdata:
+    driver: local
+
+networks:
+  chatbi-network:
+    driver: bridge

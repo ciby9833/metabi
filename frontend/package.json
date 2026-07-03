@@ -1,0 +1,43 @@
+{
+  "name": "chatbi-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3010",
+    "build": "next build",
+    "start": "next start -p 3010",
+    "lint": "next lint",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.4.0",
+    "@types/react-grid-layout": "^1.3.5",
+    "antd": "^5.20.6",
+    "axios": "^1.7.7",
+    "classnames": "^2.5.1",
+    "dayjs": "^1.11.13",
+    "echarts": "^5.5.1",
+    "echarts-for-react": "^3.0.2",
+    "highlight.js": "^11.11.1",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
+    "next": "^14.2.13",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-grid-layout": "^1.4.4",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "swr": "^2.2.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.5",
+    "@types/react": "^18.3.10",
+    "@types/react-dom": "^18.3.0",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.13",
+    "typescript": "^5.6.2"
+  }
+}
