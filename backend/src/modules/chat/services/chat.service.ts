@@ -60,6 +60,8 @@ export class ChatService {
     overrideAllowedTables?: string[];
     /** dataset 业务描述拼接，注入 Planner system prompt */
     datasetContext?: string;
+    /** 本轮上传附件 preview（text/table/pdf 内容），planner 放 system 顶部 */
+    attachmentContext?: string;
     /** 当前 turn 图片附件 —— 走 Anthropic vision content block */
     currentAttachments?: import('../../../providers/llm/types').ChatAttachmentInline[];
   }> {
@@ -192,11 +194,6 @@ export class ChatService {
       }
     }
 
-    // 附件上下文 —— 拼进 datasetContext 前面（让 Planner 优先看到用户当前 turn 上传了啥）
-    if (attachmentContext) {
-      datasetContext = attachmentContext + (datasetContext ? '\n\n---\n\n' + datasetContext : '');
-    }
-
     return {
       conversationId: conversation.id,
       userMessageId: userMessage.id,
@@ -209,6 +206,8 @@ export class ChatService {
           : 'single_skill',
       overrideAllowedTables,
       datasetContext,
+      // 附件独立字段 —— planner 会放到 system prompt 顶部（比 skill 更早）
+      attachmentContext,
       currentAttachments,
     };
   }

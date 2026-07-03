@@ -92,6 +92,8 @@ export class TurnRuntimeService implements OnModuleDestroy {
     overrideAllowedTables?: string[];
     /** 配合 overrideAllowedTables：dataset 业务描述注入 system prompt */
     datasetContext?: string;
+    /** 本轮附件的 preview 文本（table/pdf/text） —— 放 planner system 顶部 */
+    attachmentContext?: string;
     /** 本轮 image 附件（vision content block）*/
     currentAttachments?: import('../../providers/llm/types').ChatAttachmentInline[];
   }): { turnId: string } {
@@ -114,6 +116,7 @@ export class TurnRuntimeService implements OnModuleDestroy {
             userId: input.userId,
             overrideAllowedTables: input.overrideAllowedTables,
             datasetContext: input.datasetContext,
+            attachmentContext: input.attachmentContext,
             currentAttachments: input.currentAttachments,
           });
 

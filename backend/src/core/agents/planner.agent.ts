@@ -51,8 +51,12 @@ export interface PlannerInput {
    */
   datasetContext?: string;
   /**
+   * 本轮附件的 preview 文本（table 前 N 行 / pdf 前 N 字 / text 内容）
+   * 放到 planner system prompt **顶部**（比 skill 更早），提高优先级 —— 附件在场时先看附件
+   */
+  attachmentContext?: string;
+  /**
    * 本轮用户上传的 image 附件 —— 走 Anthropic vision content block
-   * table/pdf/text 的 preview 已经在 datasetContext 里以文本注入
    */
   currentAttachments?: import('../../providers/llm/types').ChatAttachmentInline[];
 }
@@ -133,40 +137,75 @@ const RECENT_TURNS_TO_SUMMARIZE = 6;
 const TOKEN_BUDGET = 80_000;
 const HARD_TOKEN_LIMIT = 120_000;
 
-const PLANNER_SYSTEM_PROMPT = `你是一个**严谨**且**高效**的数据分析助手 (ChatBI Agent)。
+const PLANNER_SYSTEM_PROMPT = `你是 ChatBI 数据分析师 —— 用户的**对话式**数据分析伙伴。
 
-## 核心原则
-1. **准确率优先于速度**：宁可拒答，不可胡猜。
-2. **逐步验证**：不要凭空写 SQL。**必须**先用 list_tables / describe_table / sample_rows 验证表和字段。
-3. **遵守 Skill 文档**：你会收到一份业务领域 Skill 的内容。Skill 里的业务术语词典（如"单量 = count distinct waybill_no"）是**权威定义**，不要自己另算。
-4. **第一时间 finalize**：一旦 run_sql 成功返回数据且符合 Skill 的指标定义，**立刻调用 finalize 结束**。
-5. **语言一致性**：narrative / insights / suggestedFollowUps / relatedHints 等所有给用户的文字字段，**语言必须跟用户当前提问的语言完全一致**。中文问中文答，英文问英文答，混合语言以最后一句的语言为准。
+## 心智模型（最重要）
 
-## 工作循环（理想路径，5-7 步）
-1. (可选) list_tables 看清表
-2. describe_table 拿目标表结构
-3. sample_rows 看 5 行确认字段值
-4. 按 Skill 的术语词典写 SQL → run_sql({dry_run: true}) 验语法
-5. run_sql({dry_run: false}) 真跑
-6. **立刻 finalize**
+你不是 SQL 执行器。你是**跟用户一起想清楚问题的分析师**。
+Claude 那样的对话：**理解 → (需要时) 讨论/澄清 → (需要时) 调工具 → 回答**。
 
-## 多轮下钻 / 召回历史
-本对话可能有历史轮次。你会在 system 块里看到**最近几轮的概要**（含真实 SQL 和数据快照）。
-如果用户问"为什么 X 这么高"、"按 Y 拆分看看"、"再看 Z 站点"等下钻问题：
+**判断标准**：
+- 用户在**讨论 / 澄清 / 问概念 / 看附件 / 表达想法**（"看看这个"、"你觉得该关注啥"、"我想分析 X 好不好"）→ **直接对话回答，不要跑 SQL**
+- 用户**明确要数据 / 统计 / 趋势 / 排名 / 分组**（"统计各大区订单"、"最近 7 天趋势"）→ 才调工具
+- 模棱两可 → 用 clarify 反问，不要硬猜就查库
 
-- **优先复用前一轮的 SQL 结构**，加 WHERE / GROUP BY，不要从 list_tables 重头探索
-- 引用前一轮具体数字时，直接说"上一轮 5/22 是 21.6 万单"，不要重新算
-- **如果需要前轮的具体行**（例如"上一轮 Top 1 的站点叫什么"），调 \`recall_turn_result(turn_index=N)\` 拉真实数据
-- **如果要复盘前轮的思路**（例如"为什么前一轮的 SQL 是这么写的"），调 \`recall_turn_messages(turn_index=N)\` 看完整 tool 过程
-- **如果只有摘要里看不到的更早轮次**，先调 \`list_previous_turns()\` 看全部历史
+**附件优先**：如果用户本轮上传了表格/图片/文档，那**是本轮主要材料**。先基于附件回答，只有明显不够或用户要交叉库时才 SQL。**不要**看到附件转头查库。
 
-## 严禁的行为
-- ❌ 已经有可用 SQL 结果还反复跑 run_sql 尝试不同写法
-- ❌ 不调用 finalize 就停（必然导致超时拒答）
-- ❌ 用 count(*) 当"单量"（除非 Skill 明确这么定义）
-- ❌ 编造不存在的字段
-- ❌ 不查 sample_rows 就猜枚举值（"Ya"/"Tidak"/"正常签收"等）
-- ❌ **写 SQL 时省略 schema 前缀**：list_tables 返回 "dwd.waybill_detail" 时，SQL 必须写完整 "FROM dwd.waybill_detail"，写裸名会报 relation does not exist
+## 工具是可选的
+
+你有一组工具（list_tables / describe_table / run_sql / compare_periods / multidim_breakdown / stats_describe / decompose_by_dimensions / recall_turn_result / cite_industry_benchmark / finalize 等）。
+
+**tools 是 optional**。用户问"你好"你不调 SQL；问"这份 Excel 里有啥"你不查库；问"帮我算最近 7 天订单"才调 run_sql。
+
+真需要 SQL 时才按规矩做：
+- 先 describe_table 拿字段（Skill 已给的可跳过）
+- 写完整 schema 前缀（如 \`dwd.waybill_detail\` 不是 \`waybill_detail\`）
+- Skill 里的术语词典（"单量 = count distinct waybill_no"）是**权威**，不要另算
+- 相对时间（"最近"、"今年"）必须翻译成具体日期
+
+## 多轮上下文
+
+你会看到最近几轮的**SQL + 数据快照 + narrative**。用户追问"上面那个 CS 是谁"、"top 3 拆分"时：
+- 引用之前的数字直接说 —— 不要再跑一次 SQL
+- 需要之前具体行调 \`recall_turn_result(turn_index=N)\`
+
+## finalize 时机
+
+写完你的完整回答就 finalize。**两条路径都可以**：
+
+**A. 对话路径（无 SQL）**：只有 narrative + 可选 clarify / insights / suggestedFollowUps
+- 讨论 / 澄清 / 看附件 / 概念问答走这条
+- sqlText 留空即可
+
+**B. 分析路径（有 SQL）**：narrative + sqlText + resultData + chartConfig 等
+- 明确的数据查询走这条
+
+**不要跑了 SQL 就拒绝 finalize；也不要没跑 SQL 就以为不能 finalize**。看用户到底问什么。
+
+## 澄清 (clarify) 优于硬猜
+
+用户问题模糊时用 clarify（narrative 说"我看到几种可能" + clarify 字段带 options）：
+- 术语歧义（"销量" = 运单数 / 件数 / 运费？）
+- 时间不清（"最近" = 7d / 30d / 90d？）
+- 维度不清（"地区" = 省 / 市 / 网点？）
+- 附件是否要跟库里数据交叉（"这份 Excel 的客户在我们系统里查最近发货" 前 clarify 一次）
+
+## 拒答 (refused) 只在
+
+- Skills 里没这个业务领域（问财务但你只有派件）
+- 时间范围完全在数据外
+- 附件本身也无法回答
+
+## 行业基准
+
+任何"行业标准 / 通常 / 一般水平" 数字 —— 必须通过 \`cite_industry_benchmark\` 工具拿，**禁止**用训练时的常识给数字。工具返回 ok=false 时拒答 + 提示补基准。
+
+## 语言 & insights
+
+- narrative / insights / followUps 语言**必须**跟用户最后提问的语言一致（中问中答）
+- insights **可选**：真发现异常/极值/趋势/矛盾才写；没啥好说就空
+- suggestedFollowUps **可选**：有可挖的方向再写 2-3 条；没有就空
+- **不要为了凑数瞎写洞见**
 
 ## ⚡ 优先：澄清 (finalize 时填 clarify 字段) 而非 refused / 而非硬猜
 **关键原则：宁可问清楚也别硬猜。** 当用户问题有以下歧义时，**finalize 时填 clarify 字段**而不是 refused：
@@ -341,11 +380,38 @@ export class PlannerAgent {
     const isDatasetMode =
       !!input.overrideAllowedTables && input.overrideAllowedTables.length > 0;
 
-    // 1) Skill 装配：企业模式 → routeSkill；dataset 模式 → 虚拟 ProjectSkill
-    const skill = isDatasetMode
-      ? this.buildVirtualProjectSkill(input)
-      : await this.resolveSkill(input);
-    yield { type: 'turn_start', skill: { name: skill.meta.name, version: skill.meta.version } };
+    // 1) Skill 装配（减法架构）：
+    //   - dataset 模式 → 虚拟 ProjectSkill（用户自助上下文）
+    //   - Master 强制指定（子 agent）→ 单 skill 兜底
+    //   - conversation.lockedSkillName → 单 skill（历史锁定，保留）
+    //   - 其他 → 全部可见 skills 塞 system，LLM 自选
+    let skills: Skill[];
+    let primarySkill: Skill;
+    if (isDatasetMode) {
+      const virtual = this.buildVirtualProjectSkill(input);
+      skills = [virtual];
+      primarySkill = virtual;
+    } else if (input.forcedSkillName || input.isSubAgent) {
+      const single = await this.resolveSkill(input);
+      skills = [single];
+      primarySkill = single;
+    } else {
+      skills = await this.resolveVisibleSkills(input);
+      // 兜底：如果 user 没任何可见 skill，用 fallback
+      if (skills.length === 0) {
+        const fb = await this.resolveSkill(input);
+        skills = [fb];
+        primarySkill = fb;
+      } else {
+        primarySkill = skills[0]; // priority 最高作为展示 skill
+      }
+    }
+    yield { type: 'turn_start', skill: { name: primarySkill.meta.name, version: primarySkill.meta.version } };
+
+    // allowedTables：多 skills 时用并集，缩小到 LLM 能选的表；dataset 模式仍用 override
+    const skillTablesUnion = isDatasetMode
+      ? input.overrideAllowedTables!
+      : Array.from(new Set(skills.flatMap((s) => s.meta.tables || [])));
 
     const ctx: ToolContext = {
       datasourceId: input.datasourceId,
@@ -354,13 +420,12 @@ export class PlannerAgent {
       log: [],
       sqlCallCount: 0,
       successfulSqlRuns: 0,
-      allowedTables: isDatasetMode
-        ? input.overrideAllowedTables!
-        : skill.meta.tables,
+      allowedTables: skillTablesUnion,
+      // ctx.skill 仍用 primary（工具层的一些日志/审计走这个）
       skill: {
-        name: skill.meta.name,
-        version: skill.meta.version,
-        body: skill.body,
+        name: primarySkill.meta.name,
+        version: primarySkill.meta.version,
+        body: primarySkill.body,
       },
     };
 
@@ -419,9 +484,14 @@ export class PlannerAgent {
         : {}),
     };
 
+    // 附件顶部 — 在 skill / metadata 之前，让 LLM 第一眼看到"用户本轮传了啥"
+    const attachmentHeader = input.attachmentContext
+      ? [{ role: 'system' as const, content: input.attachmentContext }]
+      : [];
+
     const messages: ConversationMessage[] = isDatasetMode
       ? [
-          // dataset 模式的 system prompt = 极简框架 + ProjectSkill 装配的内容
+          ...attachmentHeader,
           { role: 'system', content: PLANNER_SYSTEM_PROMPT },
           { role: 'system', content: this.buildTimeContext() },
           { role: 'system', content: input.datasetContext! },
@@ -433,9 +503,10 @@ export class PlannerAgent {
           userMessage,
         ]
       : [
+          ...attachmentHeader,
           { role: 'system', content: PLANNER_SYSTEM_PROMPT },
           { role: 'system', content: this.buildTimeContext() },
-          { role: 'system', content: this.buildSkillContext(skill) },
+          { role: 'system', content: this.buildSkillsListContext(skills) },
           ...(userIdentityPrompt ? [{ role: 'system' as const, content: userIdentityPrompt }] : []),
           ...(userStylePrompt ? [{ role: 'system' as const, content: userStylePrompt }] : []),
           ...(userContentPrompt ? [{ role: 'system' as const, content: userContentPrompt }] : []),
@@ -563,7 +634,7 @@ export class PlannerAgent {
 
         const review = await this.runVerify(
           input.question,
-          skill,
+          primarySkill,
           ctx.log,
           candidateFinalize,
           sqlResultsHistory[sqlResultsHistory.length - 1],
@@ -733,7 +804,7 @@ export class PlannerAgent {
     }
 
     const output: PlannerOutput = {
-      skill,
+      skill: primarySkill,
       trace: ctx.log,
       finalize,
       totalTokens,
@@ -945,6 +1016,58 @@ ${skill.body}
 ${attributableBlock}
 
 请严格遵循上述 Skill 的工作流、字段语义、业务术语词典和图表推荐。`;
+  }
+
+  /**
+   * 多 Skill 上下文 —— "减法架构"关键
+   *
+   * 不再让 router 提前选定 1 个 skill，而是把用户所有**可见** skills 的元信息 + body 都塞给 LLM，
+   * 让它自己判断该用哪个（或都不用，走对话路径）。
+   *
+   * 顺序：按 priority 降序；每个 skill 完整 body（业务知识不裁剪）
+   */
+  private buildSkillsListContext(skills: Skill[]): string {
+    if (skills.length === 0) {
+      return '# 可用业务知识\n\n（无 Skill 匹配当前用户可见性，纯粹按你的通用能力回答）';
+    }
+    const parts: string[] = [
+      '# 可用业务知识（Skills）',
+      '',
+      '下面列出你**可以选用**的业务 Skills。选择规则：',
+      '- 用户问题清晰对应某个 Skill 的业务领域 → 用它的 body 引导 SQL / 术语',
+      '- 用户在**讨论 / 澄清 / 概念性提问 / 看附件** → 无需选 Skill，直接对话',
+      '- 用户问题**跨多个 Skill** → 用最相关的那个作主线，参考其他',
+      '',
+      '---',
+      '',
+    ];
+    for (const skill of skills) {
+      const dims = skill.meta.attributableDimensions || [];
+      parts.push(`## Skill: \`${skill.meta.name}\` (v${skill.meta.version})`);
+      parts.push(`_${skill.meta.description}_`);
+      if (skill.meta.match) parts.push(`_匹配关键词_: ${skill.meta.match}`);
+      if (dims.length > 0) parts.push(`_可归因维度_: ${dims.map((d) => `\`${d}\``).join(', ')}`);
+      parts.push('');
+      parts.push(skill.body);
+      parts.push('');
+      parts.push('---');
+      parts.push('');
+    }
+    return parts.join('\n');
+  }
+
+  /**
+   * 列出用户可见的所有 skills（不再"选一个"—— skill 选择交给 LLM）
+   */
+  private async resolveVisibleSkills(input: PlannerInput): Promise<Skill[]> {
+    const userCtx = await this.buildUserContext(input.userId);
+    const all = this.skillLoader.getAll();
+    const visible = all.filter((s) =>
+      require('../../providers/skills/types').isSkillVisibleToUser(s, userCtx),
+    );
+    // 按 priority 降序
+    visible.sort((a, b) => (b.meta.priority || 0) - (a.meta.priority || 0));
+    return visible;
   }
 
   /**
