@@ -106,7 +106,9 @@ export class TurnRuntimeService implements OnModuleDestroy {
             conversationId: input.conversationId,
             userId: input.userId,
             // Master 暂不支持 dataset 模式（master 会派遣子 agent，复杂度高）— 后期扩
-            // 附件透传：master 自己不看，交给它派出的子 planner
+            // 附件 preview 塞进 Master system —— 让它感知"有附件在场" 别乱反问
+            attachmentContext: input.attachmentContext,
+            // image 附件透传：master 走 vision 判定意图，子 planner 处理内容
             currentAttachments: input.currentAttachments,
           })
         : this.planner.runStream({

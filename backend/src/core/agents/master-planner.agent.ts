@@ -21,6 +21,11 @@ export interface MasterInput {
   conversationId?: string;
   userId?: string;
   /**
+   * 本轮附件的 preview 文本（table/pdf/text） —— Master 必须看到才能正确判定
+   * "用户在讨论附件" vs "用户要查库分析"，避免无视附件反问"你说的什么"
+   */
+  attachmentContext?: string;
+  /**
    * 本轮用户上传的 image 附件 —— master 不看，透传给子 planner
    * (image 是数据分析用的，Master 只做意图理解 + 派子 agent；vision 归子 planner)
    */
@@ -88,10 +93,25 @@ const MAX_SUBAGENTS_PER_TURN = 4;
 /** 给子 agent 看的"压缩历史子任务结果"，避免主 agent 反复传 */
 const COMPACT_ROW_LIMIT = 5;
 
-const MASTER_SYSTEM_PROMPT = `你是 ChatBI 的**主调度官**（Master Agent），不直接查数据库。
+const MASTER_SYSTEM_PROMPT = `你是 ChatBI 的**主调度官**（Master Agent）—— 是**对话伙伴**，不是 SQL 派单员。
+
+## 心智模型（最重要）
+
+Claude 那样的对话：**理解 → (需要时) 澄清 → (需要时) 派子 agent → 汇总**。
+**不是每问必派子 agent**。
+
+**判断**：
+- 用户在**讨论 / 澄清 / 问概念 / 看附件**（"这是什么"、"我该看啥"、"帮我想想"）
+  → **直接 finalize_master** 用你自己的知识对话回答，或反 clarify 反问细节。**不要**派子 agent 去查库
+- 用户**明确要数据**（"按大区统计订单"、"最近 7 天趋势"、"Top 10 客户"）
+  → 派子 agent 去做
+
+**附件优先**：如果 attachment context 里有附件 preview，那是本轮主要材料。
+- 用户问"这份表里有啥" → 你直接答（附件内容你看得到），不派子 agent
+- 用户要跟库交叉（"这些客户在库里发货多少"）→ 派子 agent，subQuestion 里带上附件的关键值
 
 ## 你的角色
-你的工作是**理解用户问题、把它拆成 1-N 个子任务、派遣给专门的 Skill 子 agent 处理、最后汇总结论**。
+理解用户问题，判断"该讨论 / 该反问 / 该派子 agent"，最后 finalize_master 收尾。
 
 ## 你能用的工具
 1. \`list_available_skills\` — 看当前数据源下都有哪些 Skill（业务领域专家）
@@ -164,10 +184,23 @@ export class MasterPlannerAgent {
     yield { type: 'master_start' };
 
     const skillsBlock = this.buildSkillsListContext();
+    // 附件顶部注入 —— Master 需要看到用户传了什么，才能正确判定"讨论附件"vs"查库分析"
+    const attachmentHeader = input.attachmentContext
+      ? [{ role: 'system' as const, content: input.attachmentContext }]
+      : [];
+    // 用户消息也带上 attachments（vision block），跟 planner 保持一致
+    const userMessage: ConversationMessage = {
+      role: 'user',
+      content: `用户问题：${input.question}`,
+      ...(input.currentAttachments && input.currentAttachments.length > 0
+        ? { attachments: input.currentAttachments }
+        : {}),
+    };
     const messages: ConversationMessage[] = [
+      ...attachmentHeader,
       { role: 'system', content: MASTER_SYSTEM_PROMPT },
       { role: 'system', content: skillsBlock },
-      { role: 'user', content: `用户问题：${input.question}` },
+      userMessage,
     ];
 
     const toolDeclarations = this.buildToolDeclarations();

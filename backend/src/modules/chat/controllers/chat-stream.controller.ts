@@ -58,6 +58,7 @@ export class ChatStreamController {
       userId: user.id,
       overrideAllowedTables: prep.overrideAllowedTables,
       datasetContext: prep.datasetContext,
+      attachmentContext: prep.attachmentContext,
       currentAttachments: prep.currentAttachments,
     });
 
